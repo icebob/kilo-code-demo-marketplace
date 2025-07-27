@@ -54,3 +54,9 @@ After that, I made [small fixes](https://github.com/icebob/kilo-code-demo-market
 ![alt text](images/chrome_DfTV4vS3G5.png)
 
 ![alt text](images/chrome_3poJWTob92.png)
+
+# Contact
+
+Copyright (C) 2025 Icebob
+
+[![@icebob](https://img.shields.io/badge/github-icebob-green.svg)](https://github.com/icebob) [![@icebob](https://img.shields.io/badge/twitter-Icebobcsi-blue.svg)](https://twitter.com/Icebobcsi)
