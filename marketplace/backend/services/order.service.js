@@ -147,8 +147,8 @@ module.exports = {
          */
         list: {
             params: {
-                page: { type: "number", integer: true, min: 1, optional: true, default: 1 },
-                pageSize: { type: "number", integer: true, min: 1, max: 100, optional: true, default: 20 }
+                page: { type: "number", integer: true, min: 1, optional: true, default: 1, convert: true },
+                pageSize: { type: "number", integer: true, min: 1, max: 100, optional: true, default: 20, convert: true, convert: true }
             },
             async handler(ctx) {
                 const user = this.getUserFromToken(ctx);
@@ -190,7 +190,7 @@ module.exports = {
          */
         get: {
             params: {
-                id: { type: "number", integer: true }
+                id: { type: "number", integer: true, convert: true }
             },
             async handler(ctx) {
                 const user = this.getUserFromToken(ctx);
@@ -231,8 +231,8 @@ module.exports = {
          */
         sellerOrders: {
             params: {
-                page: { type: "number", integer: true, min: 1, optional: true, default: 1 },
-                pageSize: { type: "number", integer: true, min: 1, max: 100, optional: true, default: 20 }
+                page: { type: "number", integer: true, min: 1, optional: true, default: 1, convert: true },
+                pageSize: { type: "number", integer: true, min: 1, max: 100, optional: true, default: 20, convert: true }
             },
             async handler(ctx) {
                 const user = this.getUserFromToken(ctx);

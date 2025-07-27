@@ -103,6 +103,8 @@ module.exports = {
 
     middlewares: [],
 
+    hotReload: true,
+
     replCommands: null,
 
     created(broker) {

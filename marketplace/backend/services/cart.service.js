@@ -67,7 +67,7 @@ module.exports = {
          */
         add: {
             params: {
-                product_id: { type: "number", integer: true },
+                product_id: { type: "number", integer: true, convert: true },
                 quantity: { type: "number", integer: true, min: 1, optional: true, default: 1 }
             },
             async handler(ctx) {
@@ -131,7 +131,7 @@ module.exports = {
          */
         update: {
             params: {
-                id: { type: "number", integer: true },
+                id: { type: "number", integer: true, convert: true },
                 quantity: { type: "number", integer: true, min: 1 }
             },
             async handler(ctx) {
@@ -172,7 +172,7 @@ module.exports = {
          */
         remove: {
             params: {
-                id: { type: "number", integer: true }
+                id: { type: "number", integer: true, convert: true }
             },
             async handler(ctx) {
                 const user = this.getUserFromToken(ctx);

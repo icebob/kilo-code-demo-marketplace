@@ -57,7 +57,7 @@ module.exports = {
         list: {
             params: {
                 page: { type: "number", integer: true, min: 1, optional: true, default: 1 },
-                pageSize: { type: "number", integer: true, min: 1, max: 100, optional: true, default: 20 },
+                pageSize: { type: "number", integer: true, min: 1, max: 100, optional: true, default: 20, convert: true },
                 search: { type: "string", optional: true },
                 seller_id: { type: "number", integer: true, optional: true },
                 status: { type: "string", optional: true, default: "active" }
@@ -103,7 +103,7 @@ module.exports = {
          */
         get: {
             params: {
-                id: { type: "number", integer: true }
+                id: { type: "number", integer: true, convert: true }
             },
             async handler(ctx) {
                 const product = await Product.findByPk(ctx.params.id, {
@@ -154,7 +154,7 @@ module.exports = {
          */
         update: {
             params: {
-                id: { type: "number", integer: true },
+                id: { type: "number", integer: true, convert: true },
                 title: { type: "string", min: 3, max: 200, optional: true },
                 description: { type: "string", min: 10, optional: true },
                 price: { type: "number", positive: true, optional: true },
@@ -192,7 +192,7 @@ module.exports = {
          */
         remove: {
             params: {
-                id: { type: "number", integer: true }
+                id: { type: "number", integer: true, convert: true }
             },
             async handler(ctx) {
                 const user = this.getUserFromToken(ctx);
