@@ -14,6 +14,38 @@ It took ~30 minutes and cost was $32.
 
 After that, I made [small fixes](https://github.com/icebob/kilo-code-demo-marketplace/commit/e5fa768c8d365da3c3332867386ecf37ac6dd2d1) in parameter validation.
 
+## Architecture Overview
+
+### Backend Architecture: MoleculerJS microservices with 6 core services:
+
+- API Gateway (routing and CORS)
+- Auth Service (JWT-based authentication)
+- User Service (profile management)
+- Product Service (CRUD operations)
+- Cart Service (shopping cart management)
+- Order Service (checkout processing)
+### Database Design: SQLite with 5 tables:
+
+- Users (buyers and sellers)
+- Products (marketplace listings)
+- Cart Items (temporary shopping cart)
+- Orders (completed purchases)
+- Order Items (order details)
+
+### Frontend Structure: Vue 3 with:
+
+- Pinia for state management
+- Vue Router for navigation
+- TailwindCSS for styling
+- Axios for API communication
+
+## Key Features
+- **User System**: Registration, login, and dual buyer/seller roles
+- **Product Management**: Full CRUD for sellers
+- **Shopping Experience**: Browse, search, add to cart
+- **Checkout Flow**: Basic order placement
+- **Responsive UI**: Modern design with TailwindCSS
+
 
 ## Result
 
