@@ -46,6 +46,23 @@ After that, I made [small fixes](https://github.com/icebob/kilo-code-demo-market
 - **Checkout Flow**: Basic order placement
 - **Responsive UI**: Modern design with TailwindCSS
 
+# Run the application
+
+Start the Backend:
+
+```bash
+cd marketplace/backend
+npm start
+```
+
+Start the Frontend:
+
+```bash
+cd marketplace/frontend
+npm run dev
+```
+
+The application is now ready to use! The backend runs on http://localhost:3000 and the frontend on http://localhost:5173.
 
 ## Result
 
