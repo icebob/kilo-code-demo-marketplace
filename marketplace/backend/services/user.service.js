@@ -3,34 +3,114 @@
 const DbMixin = require("../mixins/db.mixin");
 const AuthMixin = require("../mixins/auth.mixin");
 const { MoleculerError } = require("moleculer").Errors;
-const { User, Product, Order } = require("../models");
 
 module.exports = {
     name: "users",
     mixins: [DbMixin("users"), AuthMixin],
 
-    model: User,
-
     settings: {
-        // Available fields in responses
-        fields: [
-            "id",
-            "email",
-            "name",
-            "role",
-            "createdAt",
-            "updatedAt"
-        ],
-
-        // Validator for the `create` & `update` actions
-        entityValidator: {
-            email: { type: "email" },
-            name: { type: "string", min: 2 },
-            password: { type: "string", min: 6, optional: true }
+        // Field definitions for @moleculer/database
+        fields: {
+            id: {
+                type: "number",
+                primaryKey: true,
+                columnName: "id",
+                generated: "increment"
+            },
+            email: {
+                type: "string",
+                required: true,
+                columnName: "email",
+                columnType: "string"
+            },
+            name: {
+                type: "string",
+                min: 2,
+                required: true,
+                columnName: "name"
+            },
+            password: {
+                type: "string",
+                min: 6,
+                columnName: "password",
+                hidden: true // Hide password in responses
+            },
+            role: {
+                type: "string",
+                columnName: "role",
+                default: "user"
+            },
+            created_at: {
+                type: "date",
+                columnName: "created_at",
+                readonly: true,
+                onCreate: () => new Date()
+            },
+            updated_at: {
+                type: "date",
+                columnName: "updated_at",
+                readonly: true,
+                onUpdate: () => new Date()
+            }
         }
     },
 
     actions: {
+        /**
+         * Find users
+         */
+        find: {
+            params: {
+                query: { type: "object", optional: true },
+                limit: { type: "number", optional: true }
+            },
+            async handler(ctx) {
+                const params = {
+                    query: ctx.params.query || {},
+                    limit: ctx.params.limit
+                };
+                return await this.adapter.find(params);
+            }
+        },
+
+        /**
+         * Create user
+         */
+        create: {
+            params: {
+                email: { type: "email" },
+                password: { type: "string", min: 6 },
+                name: { type: "string", min: 2 },
+                role: { type: "string", optional: true, default: "user" }
+            },
+            async handler(ctx) {
+                const user = await this.adapter.insert({
+                    ...ctx.params,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                });
+                return user;
+            }
+        },
+
+        /**
+         * Get user by ID (used for population)
+         */
+        get: {
+            params: {
+                id: { type: "number", integer: true, convert: true }
+            },
+            async handler(ctx) {
+                const user = await this.adapter.findById(ctx.params.id);
+                if (!user) {
+                    throw new MoleculerError("User not found", 404, "USER_NOT_FOUND");
+                }
+                // Remove password from response
+                delete user.password;
+                return user;
+            }
+        },
+
         /**
          * Get user profile
          */
@@ -41,15 +121,15 @@ module.exports = {
                     throw new MoleculerError("Unauthorized", 401, "UNAUTHORIZED");
                 }
 
-                const profile = await User.findByPk(user.id, {
-                    attributes: { exclude: ["password"] }
-                });
+                const profile = await this.adapter.findById(user.id);
 
                 if (!profile) {
                     throw new MoleculerError("User not found", 404, "USER_NOT_FOUND");
                 }
 
-                return profile.toJSON();
+                // Remove password from response
+                delete profile.password;
+                return profile;
             }
         },
 
@@ -73,10 +153,10 @@ module.exports = {
 
                 // Check if email is already taken
                 if (updates.email) {
-                    const existingUser = await User.findOne({
-                        where: { 
+                    const existingUser = await this.adapter.findOne({
+                        query: {
                             email: updates.email,
-                            id: { [require("sequelize").Op.ne]: user.id }
+                            id: { $ne: user.id }
                         }
                     });
                     if (existingUser) {
@@ -84,12 +164,12 @@ module.exports = {
                     }
                 }
 
-                await User.update(updates, {
-                    where: { id: user.id }
-                });
-
-                const updatedUser = await User.findByPk(user.id);
-                return updatedUser.toJSON();
+                updates.updated_at = new Date();
+                const updatedUser = await this.adapter.updateById(user.id, updates);
+                
+                // Remove password from response
+                delete updatedUser.password;
+                return updatedUser;
             }
         },
 
@@ -108,22 +188,13 @@ module.exports = {
                 }
 
                 const { page, pageSize } = ctx.params;
-                const offset = (page - 1) * pageSize;
 
-                const { count, rows } = await Product.findAndCountAll({
-                    where: { seller_id: user.id },
-                    limit: pageSize,
-                    offset,
-                    order: [["created_at", "DESC"]]
-                });
-
-                return {
-                    rows,
-                    total: count,
+                // Call products service to get user's products
+                return await ctx.call("products.list", {
                     page,
                     pageSize,
-                    totalPages: Math.ceil(count / pageSize)
-                };
+                    seller_id: user.id
+                });
             }
         },
 
@@ -142,31 +213,12 @@ module.exports = {
                 }
 
                 const { page, pageSize } = ctx.params;
-                const offset = (page - 1) * pageSize;
 
-                const { count, rows } = await Order.findAndCountAll({
-                    where: { buyer_id: user.id },
-                    limit: pageSize,
-                    offset,
-                    order: [["created_at", "DESC"]],
-                    include: [{
-                        model: require("../models").OrderItem,
-                        as: "items",
-                        include: [{
-                            model: Product,
-                            as: "product",
-                            attributes: ["id", "title", "image_url"]
-                        }]
-                    }]
-                });
-
-                return {
-                    rows,
-                    total: count,
+                // Call orders service to get user's orders
+                return await ctx.call("orders.list", {
                     page,
-                    pageSize,
-                    totalPages: Math.ceil(count / pageSize)
-                };
+                    pageSize
+                });
             }
         }
     },

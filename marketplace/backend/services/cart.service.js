@@ -3,25 +3,59 @@
 const DbMixin = require("../mixins/db.mixin");
 const AuthMixin = require("../mixins/auth.mixin");
 const { MoleculerError } = require("moleculer").Errors;
-const { CartItem, Product } = require("../models");
 
 module.exports = {
     name: "cart",
-    mixins: [DbMixin("cart"), AuthMixin],
-
-    model: CartItem,
+    mixins: [DbMixin("cart_items"), AuthMixin],
 
     settings: {
-        // Available fields in responses
-        fields: [
-            "id",
-            "user_id",
-            "product_id",
-            "quantity",
-            "created_at",
-            "updated_at",
-            "product"
-        ]
+        // Field definitions for @moleculer/database
+        fields: {
+            id: {
+                type: "number",
+                primaryKey: true,
+                columnName: "id",
+                generated: "increment"
+            },
+            user_id: {
+                type: "number",
+                required: true,
+                columnName: "user_id",
+                columnType: "integer"
+            },
+            product_id: {
+                type: "number",
+                required: true,
+                columnName: "product_id",
+                columnType: "integer",
+                populate: {
+                    action: "products.get",
+                    params: {
+                        fields: ["id", "title", "price", "image_url", "quantity", "status", "seller_id"]
+                    }
+                }
+            },
+            quantity: {
+                type: "number",
+                integer: true,
+                min: 1,
+                required: true,
+                columnName: "quantity",
+                columnType: "integer"
+            },
+            created_at: {
+                type: "date",
+                columnName: "created_at",
+                readonly: true,
+                onCreate: () => new Date()
+            },
+            updated_at: {
+                type: "date",
+                columnName: "updated_at",
+                readonly: true,
+                onUpdate: () => new Date()
+            }
+        }
     },
 
     actions: {
@@ -35,29 +69,26 @@ module.exports = {
                     throw new MoleculerError("Unauthorized", 401, "UNAUTHORIZED");
                 }
 
-                const cartItems = await CartItem.findAll({
-                    where: { user_id: user.id },
-                    include: [{
-                        model: Product,
-                        as: "product",
-                        include: [{
-                            model: require("../models").User,
-                            as: "seller",
-                            attributes: ["id", "name"]
-                        }]
-                    }],
-                    order: [["created_at", "DESC"]]
+                const cartItems = await this.adapter.find({
+                    query: { user_id: user.id },
+                    sort: "-created_at"
                 });
 
+                // Get product details for each cart item
+                const itemsWithProducts = await Promise.all(cartItems.map(async (item) => {
+                    const product = await ctx.call("products.get", { id: item.product_id });
+                    return { ...item, product };
+                }));
+
                 // Calculate total
-                const total = cartItems.reduce((sum, item) => {
+                const total = itemsWithProducts.reduce((sum, item) => {
                     return sum + (parseFloat(item.product.price) * item.quantity);
                 }, 0);
 
                 return {
-                    items: cartItems,
+                    items: itemsWithProducts,
                     total: total.toFixed(2),
-                    count: cartItems.length
+                    count: itemsWithProducts.length
                 };
             }
         },
@@ -79,7 +110,7 @@ module.exports = {
                 const { product_id, quantity } = ctx.params;
 
                 // Check if product exists and is available
-                const product = await Product.findByPk(product_id);
+                const product = await ctx.call("products.get", { id: product_id });
                 if (!product) {
                     throw new MoleculerError("Product not found", 404, "PRODUCT_NOT_FOUND");
                 }
@@ -93,8 +124,8 @@ module.exports = {
                 }
 
                 // Check if item already in cart
-                let cartItem = await CartItem.findOne({
-                    where: {
+                let cartItem = await this.adapter.findOne({
+                    query: {
                         user_id: user.id,
                         product_id
                     }
@@ -106,23 +137,24 @@ module.exports = {
                     if (product.quantity < newQuantity) {
                         throw new MoleculerError("Insufficient product quantity", 400, "INSUFFICIENT_QUANTITY");
                     }
-                    await cartItem.update({ quantity: newQuantity });
+                    cartItem = await this.adapter.updateById(cartItem.id, {
+                        quantity: newQuantity,
+                        updated_at: new Date()
+                    });
                 } else {
                     // Create new cart item
-                    cartItem = await CartItem.create({
+                    cartItem = await this.adapter.insert({
                         user_id: user.id,
                         product_id,
-                        quantity
+                        quantity,
+                        created_at: new Date(),
+                        updated_at: new Date()
                     });
                 }
 
                 // Return cart item with product details
-                return await CartItem.findByPk(cartItem.id, {
-                    include: [{
-                        model: Product,
-                        as: "product"
-                    }]
-                });
+                cartItem.product = product;
+                return cartItem;
             }
         },
 
@@ -142,28 +174,32 @@ module.exports = {
 
                 const { id, quantity } = ctx.params;
 
-                const cartItem = await CartItem.findOne({
-                    where: {
+                const cartItem = await this.adapter.findOne({
+                    query: {
                         id,
                         user_id: user.id
-                    },
-                    include: [{
-                        model: Product,
-                        as: "product"
-                    }]
+                    }
                 });
 
                 if (!cartItem) {
                     throw new MoleculerError("Cart item not found", 404, "CART_ITEM_NOT_FOUND");
                 }
 
+                // Get product to check availability
+                const product = await ctx.call("products.get", { id: cartItem.product_id });
+                
                 // Check product availability
-                if (cartItem.product.quantity < quantity) {
+                if (product.quantity < quantity) {
                     throw new MoleculerError("Insufficient product quantity", 400, "INSUFFICIENT_QUANTITY");
                 }
 
-                await cartItem.update({ quantity });
-                return cartItem;
+                const updatedItem = await this.adapter.updateById(id, {
+                    quantity,
+                    updated_at: new Date()
+                });
+                
+                updatedItem.product = product;
+                return updatedItem;
             }
         },
 
@@ -180,8 +216,8 @@ module.exports = {
                     throw new MoleculerError("Unauthorized", 401, "UNAUTHORIZED");
                 }
 
-                const cartItem = await CartItem.findOne({
-                    where: {
+                const cartItem = await this.adapter.findOne({
+                    query: {
                         id: ctx.params.id,
                         user_id: user.id
                     }
@@ -191,7 +227,7 @@ module.exports = {
                     throw new MoleculerError("Cart item not found", 404, "CART_ITEM_NOT_FOUND");
                 }
 
-                await cartItem.destroy();
+                await this.adapter.removeById(ctx.params.id);
                 return { success: true };
             }
         },
@@ -206,8 +242,8 @@ module.exports = {
                     throw new MoleculerError("Unauthorized", 401, "UNAUTHORIZED");
                 }
 
-                await CartItem.destroy({
-                    where: { user_id: user.id }
+                await this.adapter.removeMany({
+                    user_id: user.id
                 });
 
                 return { success: true };

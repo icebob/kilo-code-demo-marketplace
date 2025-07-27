@@ -3,27 +3,63 @@
 const DbMixin = require("../mixins/db.mixin");
 const AuthMixin = require("../mixins/auth.mixin");
 const { MoleculerError } = require("moleculer").Errors;
-const { Order, OrderItem, CartItem, Product, User } = require("../models");
-const sequelize = require("../config/database");
 
 module.exports = {
     name: "orders",
     mixins: [DbMixin("orders"), AuthMixin],
 
-    model: Order,
-
     settings: {
-        // Available fields in responses
-        fields: [
-            "id",
-            "buyer_id",
-            "total_amount",
-            "status",
-            "shipping_address",
-            "created_at",
-            "updated_at",
-            "items"
-        ]
+        // Field definitions for @moleculer/database
+        fields: {
+            id: {
+                type: "number",
+                primaryKey: true,
+                columnName: "id",
+                generated: "increment"
+            },
+            buyer_id: {
+                type: "number",
+                required: true,
+                columnName: "buyer_id",
+                columnType: "integer",
+                populate: {
+                    action: "users.get",
+                    params: {
+                        fields: ["id", "name", "email"]
+                    }
+                }
+            },
+            total_amount: {
+                type: "number",
+                required: true,
+                columnName: "total_amount",
+                columnType: "decimal"
+            },
+            status: {
+                type: "string",
+                enum: ["pending", "processing", "shipped", "delivered", "cancelled"],
+                default: "pending",
+                columnName: "status",
+                columnType: "string"
+            },
+            shipping_address: {
+                type: "string",
+                required: true,
+                columnName: "shipping_address"
+            },
+            created_at: {
+                type: "date",
+                columnName: "created_at",
+                readonly: true,
+                onCreate: () => new Date()
+            },
+            updated_at: {
+                type: "date",
+                columnName: "updated_at",
+                readonly: true,
+                onUpdate: () => new Date()
+            }
+        }
     },
 
     actions: {
@@ -42,103 +78,79 @@ module.exports = {
 
                 const { shipping_address } = ctx.params;
 
-                // Start transaction
-                const transaction = await sequelize.transaction();
-
-                try {
-                    // Get cart items
-                    const cartItems = await CartItem.findAll({
-                        where: { user_id: user.id },
-                        include: [{
-                            model: Product,
-                            as: "product"
-                        }],
-                        transaction
-                    });
-
-                    if (cartItems.length === 0) {
-                        throw new MoleculerError("Cart is empty", 400, "EMPTY_CART");
-                    }
-
-                    // Validate product availability and calculate total
-                    let totalAmount = 0;
-                    const orderItems = [];
-
-                    for (const cartItem of cartItems) {
-                        const product = cartItem.product;
-
-                        // Check if product is still available
-                        if (product.status !== "active") {
-                            throw new MoleculerError(`Product "${product.title}" is no longer available`, 400, "PRODUCT_NOT_AVAILABLE");
-                        }
-
-                        // Check quantity
-                        if (product.quantity < cartItem.quantity) {
-                            throw new MoleculerError(`Insufficient quantity for product "${product.title}"`, 400, "INSUFFICIENT_QUANTITY");
-                        }
-
-                        // Calculate item total
-                        const itemTotal = parseFloat(product.price) * cartItem.quantity;
-                        totalAmount += itemTotal;
-
-                        // Prepare order item
-                        orderItems.push({
-                            product_id: product.id,
-                            seller_id: product.seller_id,
-                            quantity: cartItem.quantity,
-                            price: product.price
-                        });
-
-                        // Update product quantity
-                        await product.update({
-                            quantity: product.quantity - cartItem.quantity,
-                            status: product.quantity - cartItem.quantity === 0 ? "sold_out" : product.status
-                        }, { transaction });
-                    }
-
-                    // Create order
-                    const order = await Order.create({
-                        buyer_id: user.id,
-                        total_amount: totalAmount.toFixed(2),
-                        status: "pending",
-                        shipping_address
-                    }, { transaction });
-
-                    // Create order items
-                    for (const item of orderItems) {
-                        await OrderItem.create({
-                            order_id: order.id,
-                            ...item
-                        }, { transaction });
-                    }
-
-                    // Clear cart
-                    await CartItem.destroy({
-                        where: { user_id: user.id },
-                        transaction
-                    });
-
-                    // Commit transaction
-                    await transaction.commit();
-
-                    // Return order with items
-                    return await Order.findByPk(order.id, {
-                        include: [{
-                            model: OrderItem,
-                            as: "items",
-                            include: [{
-                                model: Product,
-                                as: "product",
-                                attributes: ["id", "title", "image_url"]
-                            }]
-                        }]
-                    });
-
-                } catch (error) {
-                    // Rollback transaction
-                    await transaction.rollback();
-                    throw error;
+                // Get cart items
+                const cartItems = await ctx.call("cart.list");
+                
+                if (!cartItems.items || cartItems.items.length === 0) {
+                    throw new MoleculerError("Cart is empty", 400, "EMPTY_CART");
                 }
+
+                // Validate product availability and calculate total
+                let totalAmount = 0;
+                const orderItems = [];
+
+                for (const cartItem of cartItems.items) {
+                    const product = cartItem.product;
+
+                    // Check if product is still available
+                    if (product.status !== "active") {
+                        throw new MoleculerError(`Product "${product.title}" is no longer available`, 400, "PRODUCT_NOT_AVAILABLE");
+                    }
+
+                    // Check quantity
+                    if (product.quantity < cartItem.quantity) {
+                        throw new MoleculerError(`Insufficient quantity for product "${product.title}"`, 400, "INSUFFICIENT_QUANTITY");
+                    }
+
+                    // Calculate item total
+                    const itemTotal = parseFloat(product.price) * cartItem.quantity;
+                    totalAmount += itemTotal;
+
+                    // Prepare order item
+                    orderItems.push({
+                        product_id: product.id,
+                        seller_id: product.seller_id,
+                        quantity: cartItem.quantity,
+                        price: product.price
+                    });
+                }
+
+                // Create order
+                const order = await this.adapter.insert({
+                    buyer_id: user.id,
+                    total_amount: totalAmount.toFixed(2),
+                    status: "pending",
+                    shipping_address,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                });
+
+                // Create order items (we'll need a separate service for this)
+                const createdItems = [];
+                for (const item of orderItems) {
+                    const orderItem = await ctx.call("orderItems.create", {
+                        order_id: order.id,
+                        ...item
+                    });
+                    createdItems.push(orderItem);
+                }
+
+                // Update product quantities
+                for (const cartItem of cartItems.items) {
+                    const newQuantity = cartItem.product.quantity - cartItem.quantity;
+                    await ctx.call("products.update", {
+                        id: cartItem.product_id,
+                        quantity: newQuantity,
+                        status: newQuantity === 0 ? "sold_out" : cartItem.product.status
+                    });
+                }
+
+                // Clear cart
+                await ctx.call("cart.clear");
+
+                // Return order with items
+                order.items = createdItems;
+                return order;
             }
         },
 
@@ -148,7 +160,7 @@ module.exports = {
         list: {
             params: {
                 page: { type: "number", integer: true, min: 1, optional: true, default: 1, convert: true },
-                pageSize: { type: "number", integer: true, min: 1, max: 100, optional: true, default: 20, convert: true, convert: true }
+                pageSize: { type: "number", integer: true, min: 1, max: 100, optional: true, default: 20, convert: true }
             },
             async handler(ctx) {
                 const user = this.getUserFromToken(ctx);
@@ -157,30 +169,40 @@ module.exports = {
                 }
 
                 const { page, pageSize } = ctx.params;
-                const offset = (page - 1) * pageSize;
 
-                const { count, rows } = await Order.findAndCountAll({
-                    where: { buyer_id: user.id },
+                const params = {
+                    query: { buyer_id: user.id },
                     limit: pageSize,
-                    offset,
-                    order: [["created_at", "DESC"]],
-                    include: [{
-                        model: OrderItem,
-                        as: "items",
-                        include: [{
-                            model: Product,
-                            as: "product",
-                            attributes: ["id", "title", "image_url"]
-                        }]
-                    }]
-                });
+                    offset: (page - 1) * pageSize,
+                    sort: "-created_at"
+                };
+
+                const [rows, total] = await Promise.all([
+                    this.adapter.find(params),
+                    this.adapter.count({ query: { buyer_id: user.id } })
+                ]);
+
+                // Get order items for each order
+                const ordersWithItems = await Promise.all(rows.map(async (order) => {
+                    const items = await ctx.call("orderItems.find", {
+                        query: { order_id: order.id }
+                    });
+                    
+                    // Get product details for each item
+                    const itemsWithProducts = await Promise.all(items.map(async (item) => {
+                        const product = await ctx.call("products.get", { id: item.product_id });
+                        return { ...item, product };
+                    }));
+                    
+                    return { ...order, items: itemsWithProducts };
+                }));
 
                 return {
-                    rows,
-                    total: count,
+                    rows: ordersWithItems,
+                    total,
                     page,
                     pageSize,
-                    totalPages: Math.ceil(count / pageSize)
+                    totalPages: Math.ceil(total / pageSize)
                 };
             }
         },
@@ -198,31 +220,32 @@ module.exports = {
                     throw new MoleculerError("Unauthorized", 401, "UNAUTHORIZED");
                 }
 
-                const order = await Order.findOne({
-                    where: {
+                const order = await this.adapter.findOne({
+                    query: {
                         id: ctx.params.id,
                         buyer_id: user.id
-                    },
-                    include: [{
-                        model: OrderItem,
-                        as: "items",
-                        include: [{
-                            model: Product,
-                            as: "product",
-                            attributes: ["id", "title", "image_url", "description"]
-                        }, {
-                            model: User,
-                            as: "seller",
-                            attributes: ["id", "name", "email"]
-                        }]
-                    }]
+                    }
                 });
 
                 if (!order) {
                     throw new MoleculerError("Order not found", 404, "ORDER_NOT_FOUND");
                 }
 
-                return order;
+                // Get order items
+                const items = await ctx.call("orderItems.find", {
+                    query: { order_id: order.id }
+                });
+
+                // Get product and seller details for each item
+                const itemsWithDetails = await Promise.all(items.map(async (item) => {
+                    const [product, seller] = await Promise.all([
+                        ctx.call("products.get", { id: item.product_id }),
+                        ctx.call("users.get", { id: item.seller_id })
+                    ]);
+                    return { ...item, product, seller };
+                }));
+
+                return { ...order, items: itemsWithDetails };
             }
         },
 
@@ -241,35 +264,37 @@ module.exports = {
                 }
 
                 const { page, pageSize } = ctx.params;
-                const offset = (page - 1) * pageSize;
 
                 // Get order items where user is the seller
-                const { count, rows } = await OrderItem.findAndCountAll({
-                    where: { seller_id: user.id },
-                    limit: pageSize,
-                    offset,
-                    order: [["created_at", "DESC"]],
-                    include: [{
-                        model: Order,
-                        as: "order",
-                        include: [{
-                            model: User,
-                            as: "buyer",
-                            attributes: ["id", "name", "email"]
-                        }]
-                    }, {
-                        model: Product,
-                        as: "product",
-                        attributes: ["id", "title", "image_url"]
-                    }]
-                });
-
-                return {
-                    rows,
-                    total: count,
+                const orderItems = await ctx.call("orderItems.list", {
                     page,
                     pageSize,
-                    totalPages: Math.ceil(count / pageSize)
+                    seller_id: user.id
+                });
+
+                // Get order and product details for each item
+                const itemsWithDetails = await Promise.all(orderItems.rows.map(async (item) => {
+                    const [order, product] = await Promise.all([
+                        this.adapter.findById(item.order_id),
+                        ctx.call("products.get", { id: item.product_id })
+                    ]);
+                    
+                    // Get buyer details
+                    const buyer = await ctx.call("users.get", { id: order.buyer_id });
+                    
+                    return {
+                        ...item,
+                        order: { ...order, buyer },
+                        product
+                    };
+                }));
+
+                return {
+                    rows: itemsWithDetails,
+                    total: orderItems.total,
+                    page: orderItems.page,
+                    pageSize: orderItems.pageSize,
+                    totalPages: orderItems.totalPages
                 };
             }
         }

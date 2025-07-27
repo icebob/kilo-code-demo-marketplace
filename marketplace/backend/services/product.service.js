@@ -3,50 +3,88 @@
 const DbMixin = require("../mixins/db.mixin");
 const AuthMixin = require("../mixins/auth.mixin");
 const { MoleculerError } = require("moleculer").Errors;
-const { Product, User } = require("../models");
-const { Op } = require("sequelize");
 
 module.exports = {
     name: "products",
     mixins: [DbMixin("products"), AuthMixin],
 
-    model: Product,
-
     settings: {
-        // Available fields in responses
-        fields: [
-            "id",
-            "seller_id",
-            "title",
-            "description",
-            "price",
-            "quantity",
-            "image_url",
-            "status",
-            "created_at",
-            "updated_at",
-            "seller"
-        ],
-
-        // Populates
-        populates: {
-            "seller": {
-                field: "seller_id",
-                action: "users.get",
-                params: {
-                    fields: ["id", "name", "email"]
+        // Field definitions for @moleculer/database
+        fields: {
+            id: {
+                type: "number",
+                primaryKey: true,
+                columnName: "id",
+                generated: "increment"
+            },
+            seller_id: {
+                type: "number",
+                columnName: "seller_id",
+                columnType: "integer",
+                required: true,
+                populate: {
+                    action: "users.get",
+                    params: {
+                        fields: ["id", "name", "email"]
+                    }
                 }
+            },
+            title: {
+                type: "string",
+                min: 3,
+                max: 200,
+                required: true,
+                columnName: "title"
+            },
+            description: {
+                type: "string",
+                min: 10,
+                required: true,
+                columnName: "description"
+            },
+            price: {
+                type: "number",
+                positive: true,
+                required: true,
+                columnName: "price",
+                columnType: "decimal"
+            },
+            quantity: {
+                type: "number",
+                integer: true,
+                min: 0,
+                required: true,
+                columnName: "quantity",
+                columnType: "integer"
+            },
+            image_url: {
+                type: "string",
+                columnName: "image_url"
+            },
+            status: {
+                type: "string",
+                enum: ["active", "inactive", "sold_out"],
+                default: "active",
+                columnName: "status",
+                columnType: "string"
+            },
+            created_at: {
+                type: "date",
+                columnName: "created_at",
+                readonly: true,
+                onCreate: () => new Date()
+            },
+            updated_at: {
+                type: "date",
+                columnName: "updated_at",
+                readonly: true,
+                onUpdate: () => new Date()
             }
         },
 
-        // Validator for the `create` & `update` actions
-        entityValidator: {
-            title: { type: "string", min: 3, max: 200 },
-            description: { type: "string", min: 10 },
-            price: { type: "number", positive: true },
-            quantity: { type: "number", integer: true, min: 0 },
-            image_url: { type: "url", optional: true },
-            status: { type: "enum", values: ["active", "inactive", "sold_out"], optional: true }
+        // Default scopes
+        scopes: {
+            active: { status: "active" }
         }
     },
 
@@ -64,36 +102,50 @@ module.exports = {
             },
             async handler(ctx) {
                 const { page, pageSize, search, seller_id, status } = ctx.params;
-                const offset = (page - 1) * pageSize;
 
-                const where = {};
-                if (status) where.status = status;
-                if (seller_id) where.seller_id = seller_id;
+                const query = {};
+                if (status) query.status = status;
+                if (seller_id) query.seller_id = seller_id;
+                
+                // For search, we'll need to use raw query with Knex
+                let searchQuery = null;
                 if (search) {
-                    where[Op.or] = [
-                        { title: { [Op.like]: `%${search}%` } },
-                        { description: { [Op.like]: `%${search}%` } }
-                    ];
+                    searchQuery = {
+                        $raw: {
+                            condition: "(title LIKE ? OR description LIKE ?)",
+                            bindings: [`%${search}%`, `%${search}%`]
+                        }
+                    };
                 }
 
-                const { count, rows } = await Product.findAndCountAll({
-                    where,
+                const params = {
+                    query: searchQuery ? { ...query, ...searchQuery } : query,
                     limit: pageSize,
-                    offset,
-                    order: [["created_at", "DESC"]],
-                    include: [{
-                        model: User,
-                        as: "seller",
-                        attributes: ["id", "name", "email"]
-                    }]
-                });
+                    offset: (page - 1) * pageSize,
+                    sort: "-created_at",
+                    populate: ["seller"]
+                };
+
+                const [rows, total] = await Promise.all([
+                    this.adapter.find(params),
+                    this.adapter.count({ query: searchQuery ? { ...query, ...searchQuery } : query })
+                ]);
+
+                // Manually populate seller data
+                const populatedRows = await Promise.all(rows.map(async (product) => {
+                    if (product.seller_id) {
+                        const seller = await ctx.call("users.get", { id: product.seller_id });
+                        return { ...product, seller };
+                    }
+                    return product;
+                }));
 
                 return {
-                    rows,
-                    total: count,
+                    rows: populatedRows,
+                    total,
                     page,
                     pageSize,
-                    totalPages: Math.ceil(count / pageSize)
+                    totalPages: Math.ceil(total / pageSize)
                 };
             }
         },
@@ -106,16 +158,16 @@ module.exports = {
                 id: { type: "number", integer: true, convert: true }
             },
             async handler(ctx) {
-                const product = await Product.findByPk(ctx.params.id, {
-                    include: [{
-                        model: User,
-                        as: "seller",
-                        attributes: ["id", "name", "email"]
-                    }]
-                });
+                const product = await this.adapter.findById(ctx.params.id);
 
                 if (!product) {
                     throw new MoleculerError("Product not found", 404, "PRODUCT_NOT_FOUND");
+                }
+
+                // Populate seller
+                if (product.seller_id) {
+                    const seller = await ctx.call("users.get", { id: product.seller_id });
+                    product.seller = seller;
                 }
 
                 return product;
@@ -139,10 +191,12 @@ module.exports = {
                     throw new MoleculerError("Unauthorized", 401, "UNAUTHORIZED");
                 }
 
-                const product = await Product.create({
+                const product = await this.adapter.insert({
                     ...ctx.params,
                     seller_id: user.id,
-                    status: "active"
+                    status: "active",
+                    created_at: new Date(),
+                    updated_at: new Date()
                 });
 
                 return product;
@@ -168,8 +222,9 @@ module.exports = {
                     throw new MoleculerError("Unauthorized", 401, "UNAUTHORIZED");
                 }
 
-                const product = await Product.findOne({
-                    where: {
+                // Check if product exists and belongs to user
+                const product = await this.adapter.findOne({
+                    query: {
                         id: ctx.params.id,
                         seller_id: user.id
                     }
@@ -181,9 +236,10 @@ module.exports = {
 
                 const updates = { ...ctx.params };
                 delete updates.id;
+                updates.updated_at = new Date();
 
-                await product.update(updates);
-                return product;
+                const updatedProduct = await this.adapter.updateById(ctx.params.id, updates);
+                return updatedProduct;
             }
         },
 
@@ -200,8 +256,9 @@ module.exports = {
                     throw new MoleculerError("Unauthorized", 401, "UNAUTHORIZED");
                 }
 
-                const product = await Product.findOne({
-                    where: {
+                // Check if product exists and belongs to user
+                const product = await this.adapter.findOne({
+                    query: {
                         id: ctx.params.id,
                         seller_id: user.id
                     }
@@ -211,7 +268,7 @@ module.exports = {
                     throw new MoleculerError("Product not found or unauthorized", 404, "PRODUCT_NOT_FOUND");
                 }
 
-                await product.destroy();
+                await this.adapter.removeById(ctx.params.id);
                 return { success: true };
             }
         }
